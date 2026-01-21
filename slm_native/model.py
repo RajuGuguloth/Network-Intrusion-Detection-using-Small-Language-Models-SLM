@@ -1,14 +1,12 @@
-import torch
-from transformers import RobertaConfig, RobertaForMaskedLM
-from tokenizers import ByteLevelBPETokenizer
-from tokenizers.implementations import ByteLevelBPETokenizer
-from tokenizers.processors import BertProcessing
+from transformers import RobertaConfig, RobertaForMaskedLM, RobertaForSequenceClassification
 
-def create_nano_network_model(vocab_size=50000):
+def create_nano_network_model(vocab_size=50000, model_type="classification"):
     """
     Creates a 'Nano' RoBERTa model configuration.
-    This is much smaller than standard BERT/RoBERTa, designed for 
-    demonstration and fast training on small datasets.
+    
+    Args:
+        vocab_size: Size of the tokenizer vocabulary.
+        model_type: 'classification' (Binary) or 'mlm' (Masked Language Model)
     """
     config = RobertaConfig(
         vocab_size=vocab_size,
@@ -16,14 +14,19 @@ def create_nano_network_model(vocab_size=50000):
         num_attention_heads=4,
         num_hidden_layers=4,
         type_vocab_size=1,
-        hidden_size=256,   # Small vector size (Standard is 768)
-        intermediate_size=1024 # Standard is 3072
+        hidden_size=256,
+        intermediate_size=1024,
+        num_labels=2  # Normal vs Attack
     )
     
-    print("Initializing Nano-RoBERTa Model with config:")
+    print(f"Initializing Nano-RoBERTa ({model_type}) with config:")
     print(config)
     
-    model = RobertaForMaskedLM(config)
+    if model_type == "classification":
+        model = RobertaForSequenceClassification(config)
+    else:
+        model = RobertaForMaskedLM(config)
+        
     return model
 
 def test_forward_pass():

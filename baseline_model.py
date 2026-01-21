@@ -3,6 +3,8 @@ from sklearn.metrics import accuracy_score, precision_score, recall_score, f1_sc
 from sklearn.preprocessing import LabelEncoder
 import numpy as np
 
+from utils.logger import logger
+
 class BaselineModel:
     def __init__(self):
         self.clf = RandomForestClassifier(n_estimators=100, random_state=42)
@@ -36,6 +38,19 @@ class BaselineModel:
                     lambda s: le.transform([s])[0] if s in le.classes_ else -1
                 )
         
+        # Log the first few inputs for demonstration (avoid spamming everything if huge)
+        # For this demo scale (sample_size=10), logging all is fine.
+        try:
+             for i in range(min(5, len(X_test_encoded))):
+                 row_vals = X_test_encoded.iloc[i].values.tolist()
+                 logger.log(
+                     model_type="RandomForest", 
+                     input_type="Feature Vector (Encoded)", 
+                     input_data=f"{row_vals}\n(Cols: {list(X_test_encoded.columns)})"
+                 )
+        except Exception as e:
+            print(f"Logging error: {e}")
+
         return self.clf.predict(X_test_encoded)
 
     def evaluate(self, X_test, y_test):

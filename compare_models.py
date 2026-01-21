@@ -1,87 +1,117 @@
 
 import os
-import torch
+import os
 import time
+
+try:
+    import torch
+    from slm_native.model import create_nano_network_model
+    from slm_native.tokenizer import train_tokenizer, generate_synthetic_data
+    from tokenizers.implementations import ByteLevelBPETokenizer
+    NATIVE_DEPS_AVAILABLE = True
+except ImportError:
+    NATIVE_DEPS_AVAILABLE = False
+    print("[Warning] 'torch' or 'tokenizers' not found. Native Model inference will be skipped, but Input Logging will be demonstrated.")
+
 from slm_baseline.slm_client import SLMClient
-from slm_native.model import create_nano_network_model
-from slm_native.tokenizer import train_tokenizer, generate_synthetic_data
-from tokenizers.implementations import ByteLevelBPETokenizer
+
+from utils.logger import logger
+
 
 def main():
-    print("\n===========================================")
-    print("   SLM Dual-Stack Architecture Comparison")
-    print("===========================================\n")
+    print("\n=======================================================")
+    print("   SLM Tiered Architecture: Native Filter -> Text Expert")
+    print("=======================================================\n")
 
-    # --- PART 1: TEXT-BASED BASELINE ---
-    print(">>> 1. Testing Text-Based Baseline (Mistral 7B via Ollama)")
-    print("    [Approach: Metadata -> English Serializer -> LLM]")
-    
-    baseline = SLMClient()
-    # Sample "Serialized" Text
-    sample_text = (
-        "Protocol: TCP. Service: HTTP. "
-        "Source behavior: The source initiated a connection but sent ZERO payload bytes. "
-        "Behavior summary: Repeatead connection failures."
-    )
-    print(f"    Input Prompt: '{sample_text[:60]}...'")
-    
+    # --- SETUP: LOAD NATIVE MODEL ---
+    print(">>> 1. LIMITING FACTOR: Loading Nano-RoBERTa (The 'Gatekeeper')")
+    if not NATIVE_DEPS_AVAILABLE:
+        print("[Error] Torch/Tokenizers missing. Cannot run Tiered Pipeline.")
+        return
+
     try:
-        # We classify using the real client
-        print("    Sending to Ollama (may take a few seconds)...")
-        label, explanation, duration = baseline.classify(f"Analyze this flow: {sample_text}")
-        print(f"    [SUCCESS] Output: {label.upper()}")
-        print(f"    Explanation: {explanation[:100]}...")
-        print(f"    Inference Time: {duration:.2f}s")
+        # Load Tokenizer
+        tokenizer = ByteLevelBPETokenizer("network_tokenizer/vocab.json", "network_tokenizer/merges.txt")
+        # Load Trained Weights
+        model = create_nano_network_model(vocab_size=tokenizer.get_vocab_size(), model_type="classification")
+        
+        weights_path = "slm_native/nano_model.pth"
+        if os.path.exists(weights_path):
+            model.load_state_dict(torch.load(weights_path))
+            print(f"    [Success] Loaded trained weights from {weights_path}")
+        else:
+            print("    [Warning] Trained weights not found! Using random weights (Run phase 2 to train).")
+
+        model.eval() # Set to evaluation mode
     except Exception as e:
-        print(f"    [Skipped] Ollama not running or error: {e}")
+        print(f"    [Error] Model loading failed: {e}")
+        return
 
-    print("\n" + "-"*40 + "\n")
+    # --- DEFINE TEST CASES ---
+    test_cases = [
+        {
+            "type": "Normal", 
+            "payload": "47 45 54 20 2F 20 48 54 54 50 20 00 00", # GET / ...
+            "description": "Protocol: TCP. Service: HTTP. Normal Web Traffic."
+        },
+        {
+            "type": "Attack", 
+            "payload": "90 90 90 90 90 90 EB 1E", # NOP Sled
+            "description": "Protocol: TCP. Service: SSH. Suspicious NOP Sled detected in payload."
+        }
+    ]
 
-    # --- PART 2: NETWORK-NATIVE MODEL ---
-    print(">>> 2. Testing Network-Native Model (Nano-RoBERTa)")
-    print("    [Approach: Raw Bytes -> Byte Tokenizer -> Custom Transformer]")
-
-    # Check for resources
-    if not os.path.exists("network_tokenizer"):
-        print("    [Setup] Training Tokenizer on synthetic network data...")
-        if not os.path.exists("synthetic_network_logs.txt"):
-            generate_synthetic_data("synthetic_network_logs.txt")
-        train_tokenizer("synthetic_network_logs.txt")
+    # --- EXECUTE PIPELINE ---
+    baseline_client = SLMClient()
     
-    # Load Tokenizer
-    try:
-        tokenizer = ByteLevelBPETokenizer(
-            "network_tokenizer/vocab.json",
-            "network_tokenizer/merges.txt",
+    for i, test in enumerate(test_cases):
+        print(f"\n--- Event {i+1}: {test['type']} Traffic ---")
+        print(f"    Payload: {test['payload']}")
+        
+        # 1. NATIVE FILTER (Fast)
+        start_native = time.time()
+        
+        # Tokenize & Infer
+        encoded = tokenizer.encode(test['payload'])
+        inputs = torch.tensor([encoded.ids])
+        with torch.no_grad():
+            outputs = model(inputs)
+            probs = torch.nn.functional.softmax(outputs.logits, dim=1)
+            prediction_idx = torch.argmax(probs).item()
+            confidence = probs[0][prediction_idx].item()
+            
+        native_dur = time.time() - start_native
+        
+        # Log Native Input
+        logger.log(
+            model_type="Nano-RoBERTa (Filter)",
+            input_type="Hex Payload",
+            input_data=test['payload'],
+            prediction=f"Class {prediction_idx} ({confidence:.2f})",
+            duration=native_dur
         )
+
+        label_str = "ATTACK" if prediction_idx == 1 else "Normal"
+        print(f"    [Native Filter] Prediction: {label_str} (Conf: {confidence:.2f}) | Time: {native_dur:.4f}s")
         
-        # Initialize Model (Untrained random weights for demo, but correct architecture)
-        model = create_nano_network_model(vocab_size=tokenizer.get_vocab_size())
-        
-        # Sample Raw Input (Hex)
-        sample_hex = "192.168.1.5 TCP 48 54 54 50 20 2F 20 48 54 54 50" # "HTTP / HTTP"
-        print(f"    Input Payload: '{sample_hex}'")
-        
-        # Tokenize
-        encoded = tokenizer.encode(sample_hex)
-        print(f"    Token IDs: {encoded.ids}")
-        
-        # Inference
-        input_ids = torch.tensor([encoded.ids])
-        start_time = time.time()
-        output = model(input_ids)
-        native_duration = time.time() - start_time
-        
-        print(f"    [SUCCESS] Model produced Logits Shape: {output.logits.shape}")
-        print(f"    Inference Time: {native_duration:.4f}s")
-        print("    (Note: This model is >100x faster and reads raw bytes directly)")
-        
-    except Exception as e:
-        print(f"    [Error] Native model check failed: {e}")
-        print("    (Ensure torch and transformers are installed)")
+        # 2. CONDITIONAL TEXT ANALYSIS (Slow but Explanatory)
+        if prediction_idx == 1: # If Suspicious
+            print("    >>> ALERT! Triggering Text SLM for analysis...")
+            
+            prompt = test['description']
+            print(f"    [Text Expert] Analyzing: '{prompt}'")
+            
+            label, explanation, text_dur = baseline_client.classify(f"Analyze this flow: {prompt}")
+            
+            print(f"    [Text Expert] Verdict: {label}")
+            print(f"    [Text Expert] Explanation: {explanation.strip()}")
+            print(f"    [Text Expert] Time: {text_dur:.2f}s")
+            
+        else:
+            print("    >>> Status: Benign. Text Analysis SKIPPED (Saved ~2-5s computational cost).")
 
     print("\n===========================================")
-    print("Comparison Complete.")
+    print("Pipeline Demo Complete.")
 
 if __name__ == "__main__":
     main()

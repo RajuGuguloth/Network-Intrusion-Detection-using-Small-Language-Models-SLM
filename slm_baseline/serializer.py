@@ -129,7 +129,13 @@ def derive_flow_description(row):
         "pkt_pattern": pkt_pattern,
         "conn_state": conn_state,
         "summary": summary,
-        "anomalies": anomaly_indicators
+        "anomalies": anomaly_indicators,
+        # Raw Metrics for context
+        "sbytes": sbytes,
+        "dbytes": dbytes,
+        "spkts": spkts,
+        "dpkts": dpkts,
+        "raw_dur": duration
     }
 
 def format_analyst_prompt(train_rows, target_row, num_shots=0, use_cot=True):
@@ -147,17 +153,49 @@ def format_analyst_prompt(train_rows, target_row, num_shots=0, use_cot=True):
         "Respond in a clear and structured manner.\n"
     )
 
-    # 2. Core ANALYSIS prompt (Hardened)
-    # Using the new fields
-    
+    # 2. Few-Shot Logic (Dynamic Injection)
+    few_shot_context = ""
+    if num_shots > 0 and train_rows is not None and len(train_rows) > 0:
+        few_shot_context = "\nHere are some reference examples for your training:\n"
+        
+        # Sample random rows from training set
+        # Using a simple sample here, in production we might want Semantic Search (RAG)
+        import pandas as pd
+        if len(train_rows) > num_shots:
+             examples = train_rows.sample(n=num_shots)
+        else:
+             examples = train_rows
+             
+        for i, (_, row) in enumerate(examples.iterrows()):
+            ex_desc = derive_flow_description(row)
+            ex_label = "Suspicious" if row.get('label', 0) == 1 else "Normal"
+            
+            # Construct a "mini" interaction
+            few_shot_context += f"\n--- Example {i+1} ---\n"
+            few_shot_context += f"Input:\n"
+            few_shot_context += f"- Protocol: {ex_desc['protocol']} ({ex_desc['service']})\n"
+            few_shot_context += f"- Traffic: {ex_desc['sbytes']} bytes sent, {ex_desc['dbytes']} bytes received.\n"
+            few_shot_context += f"- Packets: {ex_desc['spkts']} sent, {ex_desc['dpkts']} received.\n"
+            few_shot_context += f"- Duration: {ex_desc['raw_dur']:.4f}s\n"
+            few_shot_context += f"- Source behavior: {ex_desc['src_behavior']}\n"
+            few_shot_context += f"- Behavior summary: {ex_desc['summary']}\n"
+            few_shot_context += f"Output:\n"
+            few_shot_context += f"Classification: {ex_label}\n"
+            few_shot_context += f"Reasoning: This classification is based on historical ground truth.\n"
+
+    # 3. Core ANALYSIS prompt (Hardened)
     analysis_prompt = (
-        "Analyze the following network flow.\n\n"
+        f"{few_shot_context}\n"
+        "----------------------------------------\n"
+        "Now, analyze the following network flow.\n\n"
         "Network Flow Description:\n"
-        f"- Protocol: {desc['protocol']}\n"
-        f"- Service: {desc['service']}\n"
+        f"- Protocol: {desc['protocol']} ({desc['service']})\n"
+        f"- Traffic: {desc['sbytes']} bytes sent, {desc['dbytes']} bytes received.\n"
+        f"- Packets: {desc['spkts']} sent, {desc['dpkts']} received.\n"
+        f"- Duration: {desc['raw_dur']:.4f}s\n"
         f"- Source behavior: {desc['src_behavior']}\n"
         f"- Destination behavior: {desc['dst_behavior']}\n"
-        f"- Duration: {desc['duration']}\n"
+        f"- Duration Desc: {desc['duration']}\n"
         f"- Packet pattern: {desc['pkt_pattern']}\n"
         f"- Connection state: {desc['conn_state']}\n"
         f"- Behavior summary: {desc['summary']}\n\n"

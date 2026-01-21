@@ -4,22 +4,29 @@ import time
 import re
 import math
 
+import sys
+import os
+# Add root to path if needed for relative import in some execution contexts
+sys.path.append(os.path.abspath(os.path.join(os.path.dirname(__file__), '..')))
+
+from utils.logger import logger
+
 class SLMClient:
     def __init__(self, model_name="mistral", api_url="http://localhost:11434/api/generate", log_file="slm_interactions.log"):
         self.model_name = model_name
         self.api_url = api_url
         self.log_file = log_file
-        # Clear log file on init
-        with open(self.log_file, "w") as f:
-            f.write("--- SLM Interaction Log ---\n")
+        # logger.py handles the file opening/appending now
 
     def _log_interaction(self, prompt, response, duration):
-        with open(self.log_file, "a") as f:
-            f.write("\n" + "="*40 + "\n")
-            f.write(f"PROMPT:\n{prompt}\n")
-            f.write("-" * 20 + "\n")
-            f.write(f"RESPONSE ({duration:.2f}s):\n{response}\n")
-            f.write("="*40 + "\n")
+        # Use our new Unified Logger
+        logger.log(
+            model_type=f"SLM ({self.model_name})",
+            input_type="Text Prompt (Serialized)",
+            input_data=prompt,
+            prediction=response,
+            duration=duration
+        )
 
     def _query_ollama(self, prompt, options=None):
         if options is None:
